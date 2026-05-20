@@ -8,7 +8,7 @@
 #     subprocess. No xdist, no shared workers, no module-level leakage
 #     between files.
 #   * TZ=UTC, LANG=C.UTF-8, PYTHONHASHSEED=0 (deterministic)
-#   * Credential env vars blanked (conftest.py also does this, but this
+#   * Env vars blanked (conftest.py also does this, but this
 #     is belt-and-suspenders for anyone running pytest outside our
 #     conftest path — e.g. on a single file)
 #   * Proper venv activation (probes .venv, venv, then ~/.hermes/...)
@@ -48,53 +48,31 @@ fi
 
 PYTHON="$VENV/bin/python"
 
-# ── Hermetic environment ────────────────────────────────────────────────────
-# Mirror what CI does in .github/workflows/tests.yml + what conftest.py does.
-# Unset every credential-shaped var currently in the environment.
-while IFS='=' read -r name _; do
-  case "$name" in
-    *_API_KEY|*_TOKEN|*_SECRET|*_PASSWORD|*_CREDENTIALS|*_ACCESS_KEY| \
-    *_SECRET_ACCESS_KEY|*_PRIVATE_KEY|*_OAUTH_TOKEN|*_WEBHOOK_SECRET| \
-    *_ENCRYPT_KEY|*_APP_SECRET|*_CLIENT_SECRET|*_CORP_SECRET|*_AES_KEY| \
-    AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|FAL_KEY| \
-    GH_TOKEN|GITHUB_TOKEN)
-      unset "$name"
-      ;;
-  esac
-done < <(env)
 
-# Unset HERMES_* behavioral vars too.
-unset HERMES_YOLO_MODE HERMES_INTERACTIVE HERMES_QUIET HERMES_TOOL_PROGRESS \
-      HERMES_TOOL_PROGRESS_MODE HERMES_MAX_ITERATIONS HERMES_SESSION_PLATFORM \
-      HERMES_SESSION_CHAT_ID HERMES_SESSION_CHAT_NAME HERMES_SESSION_THREAD_ID \
-      HERMES_SESSION_SOURCE HERMES_SESSION_KEY HERMES_GATEWAY_SESSION \
-      HERMES_CRON_SESSION \
-      HERMES_PLATFORM HERMES_INFERENCE_PROVIDER HERMES_MANAGED HERMES_DEV \
-      HERMES_CONTAINER HERMES_EPHEMERAL_SYSTEM_PROMPT HERMES_TIMEZONE \
-      HERMES_REDACT_SECRETS HERMES_BACKGROUND_NOTIFICATIONS HERMES_EXEC_ASK \
-      HERMES_HOME_MODE 2>/dev/null || true
-
-# Pin deterministic runtime.
-export TZ=UTC
-export LANG=C.UTF-8
-export LC_ALL=C.UTF-8
-export PYTHONHASHSEED=0
-
-# ── Live-gateway test guard (developer machines) ────────────────────────────
+# ── Live-gateway plugin (computed before we drop env) ───────────────────────
+EXTRA_PYTHONPATH=""
+EXTRA_PYTEST_PLUGINS=""
 if [ -f "$HOME/.hermes/pytest_live_guard.py" ]; then
-  case ":${PYTHONPATH:-}:" in
-    *":$HOME/.hermes:"*) ;;
-    *) export PYTHONPATH="${PYTHONPATH:+$PYTHONPATH:}$HOME/.hermes" ;;
-  esac
-  if [[ ",${PYTEST_PLUGINS:-}," != *,pytest_live_guard,* ]]; then
-    export PYTEST_PLUGINS="${PYTEST_PLUGINS:+$PYTEST_PLUGINS,}pytest_live_guard"
-  fi
+  EXTRA_PYTHONPATH="$HOME/.hermes"
+  EXTRA_PYTEST_PLUGINS="pytest_live_guard"
 fi
 
-# ── Run ─────────────────────────────────────────────────────────────────────
+
+# ── Run in hermetic env ──────────────────────────────────────────────────────
+# env -i: start with empty environment, opt-in only what we need.
+# No credential var can leak — you'd have to explicitly add it here.
+echo "▶ running per-file parallel test suite via run_tests_parallel.py"
+echo "  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)"
+
 cd "$REPO_ROOT"
 
-echo "▶ running per-file parallel test suite via run_tests_parallel.py"
-echo "  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; all credential env vars unset)"
-
-exec "$PYTHON" "$SCRIPT_DIR/run_tests_parallel.py" "$@"
+exec env -i \
+  PATH="$PATH" \
+  HOME="$HOME" \
+  TZ=UTC \
+  LANG=C.UTF-8 \
+  LC_ALL=C.UTF-8 \
+  PYTHONHASHSEED=0 \
+  ${EXTRA_PYTHONPATH:+PYTHONPATH="$EXTRA_PYTHONPATH"} \
+  ${EXTRA_PYTEST_PLUGINS:+PYTEST_PLUGINS="$EXTRA_PYTEST_PLUGINS"} \
+  "$PYTHON" "$SCRIPT_DIR/run_tests_parallel.py" "$@"
