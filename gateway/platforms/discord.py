@@ -747,7 +747,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 # Must run BEFORE the user allowlist check so that bots
                 # permitted by DISCORD_ALLOW_BOTS are not rejected for
                 # not being in DISCORD_ALLOWED_USERS (fixes #4466).
-                if getattr(message.author, "bot", False):
+                _is_bot = getattr(message.author, "bot", False)
+                if _is_bot:
                     allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
                     if allow_bots == "none":
                         return
@@ -756,6 +757,21 @@ class DiscordAdapter(BasePlatformAdapter):
                             return
                     # "all" falls through; bot is permitted — skip the
                     # human-user allowlist below (bots aren't in it).
+
+                    # Anti-loop: even permitted bot messages drop known loop-fuel
+                    _content = (message.content or "").strip()
+                    _loop_fuel = (
+                        "等", "收到", "确认", "静默", "停止", "在",
+                        "The model returned no response",
+                        "Codex response remained incomplete",
+                        "Interrupting current task",
+                    )
+                    if any(p.lower() in _content.lower() for p in _loop_fuel):
+                        logger.debug(
+                            "[%s] Dropping bot loop-fuel message: author=%s content=%.100s",
+                            self.name, message.author.id, _content,
+                        )
+                        return
                 else:
                     # Non-bot: enforce the configured user/role allowlists.
                     # Pass guild + is_dm so role checks are scoped to the
