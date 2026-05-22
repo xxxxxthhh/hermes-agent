@@ -16,14 +16,17 @@ def _make_author(*, bot: bool = False, is_self: bool = False):
     return author
 
 
-def _make_message(*, author=None, content="hello", mentions=None, is_dm=False, msg_type=None):
+def _make_message(*, author=None, content="hello", mentions=None, is_dm=False, message_type=None):
     """Create a mock Discord message."""
     msg = MagicMock()
     msg.author = author or _make_author()
     msg.content = content
     msg.attachments = []
     msg.mentions = mentions or []
-    msg.type = msg_type
+    if message_type is None:
+        import discord
+        message_type = discord.MessageType.default
+    msg.type = message_type
     if is_dm:
         import discord
         msg.channel = MagicMock(spec=discord.DMChannel)
@@ -54,17 +57,14 @@ class TestDiscordBotFilter(unittest.TestCase):
             return False
 
         if getattr(message.author, "bot", False):
+            if message.type == discord.MessageType.reply:
+                return False
+            if not client_user or client_user not in message.mentions:
+                return False
             allow = allow_bots.lower().strip()
             if allow == "none":
                 return False
-            elif allow == "mentions":
-                if not client_user or client_user not in message.mentions:
-                    return False
-            # "all" falls through
-
-            # Anti-loop: unconditionally drop bot reply messages
-            if message.type == discord.MessageType.reply:
-                return False
+            # "mentions" and "all" both fall through after explicit self mention.
         
         return True  # message accepted
 
@@ -88,11 +88,19 @@ class TestDiscordBotFilter(unittest.TestCase):
         msg = _make_message(author=bot)
         self.assertFalse(self._run_filter(msg, "none"))
 
-    def test_allow_bots_all_accepts_bots(self):
-        """With allow_bots=all, all bot messages are accepted."""
+    def test_allow_bots_all_rejects_without_self_mention(self):
+        """Bot messages still require explicit self mention with allow_bots=all."""
+        our_user = _make_author(is_self=True)
         bot = _make_author(bot=True)
-        msg = _make_message(author=bot)
-        self.assertTrue(self._run_filter(msg, "all"))
+        msg = _make_message(author=bot, mentions=[])
+        self.assertFalse(self._run_filter(msg, "all", our_user))
+
+    def test_allow_bots_all_accepts_with_self_mention(self):
+        """With allow_bots=all, substantive bot messages with @mention are accepted."""
+        our_user = _make_author(is_self=True)
+        bot = _make_author(bot=True)
+        msg = _make_message(author=bot, content="Please review PR #123", mentions=[our_user])
+        self.assertTrue(self._run_filter(msg, "all", our_user))
 
     def test_allow_bots_mentions_rejects_without_mention(self):
         """With allow_bots=mentions, bot messages without @mention are rejected."""
@@ -109,26 +117,29 @@ class TestDiscordBotFilter(unittest.TestCase):
         self.assertTrue(self._run_filter(msg, "mentions", our_user))
 
     def test_default_is_none(self):
-        """Default behavior (no env var) should be 'none'."""
-        default = os.getenv("DISCORD_ALLOW_BOTS", "none")
+        """Document the adapter's code default when no env override is set."""
+        with patch.dict(os.environ, {}, clear=True):
+            default = os.getenv("DISCORD_ALLOW_BOTS", "none")
         self.assertEqual(default, "none")
 
     def test_case_insensitive(self):
         """Allow_bots value should be case-insensitive."""
+        our_user = _make_author(is_self=True)
         bot = _make_author(bot=True)
-        msg = _make_message(author=bot)
-        self.assertTrue(self._run_filter(msg, "ALL"))
-        self.assertTrue(self._run_filter(msg, "All"))
-        self.assertFalse(self._run_filter(msg, "NONE"))
-        self.assertFalse(self._run_filter(msg, "None"))
+        msg = _make_message(author=bot, content="Please review this", mentions=[our_user])
+        self.assertTrue(self._run_filter(msg, "ALL", our_user))
+        self.assertTrue(self._run_filter(msg, "All", our_user))
+        self.assertFalse(self._run_filter(msg, "NONE", our_user))
+        self.assertFalse(self._run_filter(msg, "None", our_user))
 
 
     def test_allow_bots_all_rejects_bot_reply(self):
         """Even with allow_bots=all, bot reply messages are dropped."""
         import discord
+        our_user = _make_author(is_self=True)
         bot = _make_author(bot=True)
-        msg = _make_message(author=bot, msg_type=discord.MessageType.reply)
-        self.assertFalse(self._run_filter(msg, "all"))
+        msg = _make_message(author=bot, mentions=[our_user], message_type=discord.MessageType.reply)
+        self.assertFalse(self._run_filter(msg, "all", our_user))
 
     def test_allow_bots_mentions_rejects_bot_reply(self):
         """Bot reply messages are dropped even when @mentioned."""
@@ -138,7 +149,7 @@ class TestDiscordBotFilter(unittest.TestCase):
         msg = _make_message(
             author=bot,
             mentions=[our_user],
-            msg_type=discord.MessageType.reply,
+            message_type=discord.MessageType.reply,
         )
         self.assertFalse(self._run_filter(msg, "mentions", our_user))
 
@@ -146,8 +157,19 @@ class TestDiscordBotFilter(unittest.TestCase):
         """Human reply messages are not dropped by the anti-loop guard."""
         import discord
         human = _make_author(bot=False)
-        msg = _make_message(author=human, msg_type=discord.MessageType.reply)
+        msg = _make_message(author=human, message_type=discord.MessageType.reply)
         self.assertTrue(self._run_filter(msg, "all"))
+
+    def test_substantive_bot_default_message_with_mention_is_accepted(self):
+        """Substantive default bot messages with self mention still support bot-to-bot review."""
+        our_user = _make_author(is_self=True)
+        bot = _make_author(bot=True)
+        msg = _make_message(
+            author=bot,
+            content="PR #123 is ready. Please review the diff and test plan.",
+            mentions=[our_user],
+        )
+        self.assertTrue(self._run_filter(msg, "all", our_user))
 
 
 if __name__ == "__main__":
