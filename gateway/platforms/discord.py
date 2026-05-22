@@ -756,9 +756,14 @@ class DiscordAdapter(BasePlatformAdapter):
                         return
                     _client_user = self._client.user if self._client is not None else None
                     _self_mentioned = _client_user is not None and _client_user in message.mentions
+                    _client_user_id = getattr(_client_user, "id", None)
+                    _explicit_self_mentioned = (
+                        _client_user_id is not None
+                        and int(_client_user_id) in set(getattr(message, "raw_mentions", []))
+                    )
                     _is_dm_channel = discord is not None and isinstance(message.channel, discord.DMChannel)
                     if allow_bots in {"mentions", "all"} and not _is_dm_channel:
-                        if not _self_mentioned:
+                        if not _explicit_self_mentioned:
                             return
                     # Permitted bots skip the human-user allowlist below
                     # (bots aren't in it).
@@ -771,7 +776,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     # ambient bot replies.
                     if (
                         message.type == discord.MessageType.reply
-                        and not _self_mentioned
+                        and not _explicit_self_mentioned
                     ):
                         logger.debug(
                             "[%s] Dropping bot reply message: author=%s",
