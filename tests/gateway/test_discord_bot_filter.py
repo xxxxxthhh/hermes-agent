@@ -60,15 +60,15 @@ class TestDiscordBotFilter(unittest.TestCase):
             allow = allow_bots.lower().strip()
             if allow == "none":
                 return False
-            elif allow == "mentions":
-                if not client_user or client_user not in message.mentions:
+            import discord
+            is_dm_channel = isinstance(message.channel, discord.DMChannel)
+            self_mentioned = client_user is not None and client_user in message.mentions
+            if allow in {"mentions", "all"} and not is_dm_channel:
+                if not self_mentioned:
                     return False
-            # "all" falls through
 
             # Anti-loop: drop bot reply messages unless they explicitly mention us
-            if message.type == discord.MessageType.reply and (
-                not client_user or client_user not in message.mentions
-            ):
+            if message.type == discord.MessageType.reply and not self_mentioned:
                 return False
         
         return True  # message accepted
@@ -93,11 +93,18 @@ class TestDiscordBotFilter(unittest.TestCase):
         msg = _make_message(author=bot)
         self.assertFalse(self._run_filter(msg, "none"))
 
-    def test_allow_bots_all_accepts_bots_without_self_mention(self):
-        """With allow_bots=all, non-reply bot messages are accepted without @mention."""
+    def test_allow_bots_all_accepts_dm_bots_without_self_mention(self):
+        """With allow_bots=all, bot DMs are accepted without @mention."""
         bot = _make_author(bot=True)
-        msg = _make_message(author=bot, mentions=[])
+        msg = _make_message(author=bot, mentions=[], is_dm=True)
         self.assertTrue(self._run_filter(msg, "all"))
+
+    def test_allow_bots_all_rejects_channel_bot_message_without_self_mention(self):
+        """Even allow_bots=all must not accept ambient bot messages in shared channels."""
+        our_user = _make_author(is_self=True)
+        bot = _make_author(bot=True)
+        msg = _make_message(author=bot, mentions=[], is_dm=False)
+        self.assertFalse(self._run_filter(msg, "all", our_user))
 
     def test_allow_bots_mentions_rejects_without_mention(self):
         """With allow_bots=mentions, bot messages without @mention are rejected."""
@@ -122,9 +129,10 @@ class TestDiscordBotFilter(unittest.TestCase):
     def test_case_insensitive(self):
         """Allow_bots value should be case-insensitive."""
         bot = _make_author(bot=True)
-        msg = _make_message(author=bot)
-        self.assertTrue(self._run_filter(msg, "ALL"))
-        self.assertTrue(self._run_filter(msg, "All"))
+        our_user = _make_author(is_self=True)
+        msg = _make_message(author=bot, mentions=[our_user])
+        self.assertTrue(self._run_filter(msg, "ALL", our_user))
+        self.assertTrue(self._run_filter(msg, "All", our_user))
         self.assertFalse(self._run_filter(msg, "NONE"))
         self.assertFalse(self._run_filter(msg, "None"))
 
