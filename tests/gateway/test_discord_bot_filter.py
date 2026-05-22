@@ -65,8 +65,10 @@ class TestDiscordBotFilter(unittest.TestCase):
                     return False
             # "all" falls through
 
-            # Anti-loop: unconditionally drop bot reply messages
-            if message.type == discord.MessageType.reply:
+            # Anti-loop: drop bot reply messages unless they explicitly mention us
+            if message.type == discord.MessageType.reply and (
+                not client_user or client_user not in message.mentions
+            ):
                 return False
         
         return True  # message accepted
@@ -127,22 +129,34 @@ class TestDiscordBotFilter(unittest.TestCase):
         self.assertFalse(self._run_filter(msg, "None"))
 
 
-    def test_allow_bots_all_rejects_bot_reply(self):
-        """Even with allow_bots=all, bot reply messages are dropped."""
+    def test_allow_bots_all_rejects_bot_reply_without_self_mention(self):
+        """With allow_bots=all, ambient bot reply messages are dropped."""
         import discord
         our_user = _make_author(is_self=True)
         bot = _make_author(bot=True)
-        msg = _make_message(author=bot, mentions=[our_user], message_type=discord.MessageType.reply)
+        msg = _make_message(author=bot, mentions=[], message_type=discord.MessageType.reply)
         self.assertFalse(self._run_filter(msg, "all", our_user))
 
-    def test_allow_bots_mentions_rejects_bot_reply(self):
-        """Bot reply messages are dropped even when @mentioned."""
+    def test_allow_bots_mentions_accepts_bot_reply_with_self_mention(self):
+        """Bot reply messages are accepted when they explicitly @mention us."""
         import discord
         our_user = _make_author(is_self=True)
         bot = _make_author(bot=True)
         msg = _make_message(
             author=bot,
             mentions=[our_user],
+            message_type=discord.MessageType.reply,
+        )
+        self.assertTrue(self._run_filter(msg, "mentions", our_user))
+
+    def test_allow_bots_mentions_rejects_bot_reply_without_self_mention(self):
+        """Bot reply messages without explicit self mention are still dropped."""
+        import discord
+        our_user = _make_author(is_self=True)
+        bot = _make_author(bot=True)
+        msg = _make_message(
+            author=bot,
+            mentions=[],
             message_type=discord.MessageType.reply,
         )
         self.assertFalse(self._run_filter(msg, "mentions", our_user))
