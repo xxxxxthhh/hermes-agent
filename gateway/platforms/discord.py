@@ -743,8 +743,9 @@ class DiscordAdapter(BasePlatformAdapter):
                 # Bot message filtering (DISCORD_ALLOW_BOTS):
                 #   "none"     — ignore all other bots (default)
                 #   "mentions" — accept bot messages only when they @mention us
-                #   "all"      — accept non-reply bot messages; reply messages still
-                #                drop via anti-loop guard below
+                #   "all"      — accept bot messages in DMs; in shared channels
+                #                and threads, bot messages still need an explicit
+                #                self-mention to avoid ambient bot-to-bot loops
                 # Must run BEFORE the user allowlist check so that bots
                 # permitted by DISCORD_ALLOW_BOTS are not rejected for
                 # not being in DISCORD_ALLOWED_USERS (fixes #4466).
@@ -753,21 +754,33 @@ class DiscordAdapter(BasePlatformAdapter):
                     allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
                     if allow_bots == "none":
                         return
-                    elif allow_bots == "mentions":
-                        if not self._client.user or self._client.user not in message.mentions:
+                    _client_user = self._client.user if self._client is not None else None
+                    _self_mentioned = _client_user is not None and _client_user in message.mentions
+                    _client_user_id = getattr(_client_user, "id", None)
+                    _explicit_self_mentioned = (
+                        _client_user_id is not None
+                        and int(_client_user_id) in set(getattr(message, "raw_mentions", []))
+                    )
+                    _is_dm_channel = discord is not None and isinstance(message.channel, discord.DMChannel)
+                    if allow_bots in {"mentions", "all"} and not _is_dm_channel:
+                        if not _explicit_self_mentioned:
                             return
-                    # "all" falls through; bot is permitted — skip the
-                    # human-user allowlist below (bots aren't in it).
+                    # Permitted bots skip the human-user allowlist below
+                    # (bots aren't in it).
 
-                    # Anti-loop: unconditionally drop bot reply messages.
-                    # In multi-agent threads, reply chains are the primary
-                    # loop fuel; discarding them by MessageType is clean,
-                    # content-agnostic, and requires no language-specific
-                    # hardcoding.
-                    if message.type == discord.MessageType.reply:
+                    # Anti-loop: drop bot reply messages unless they explicitly
+                    # mention this bot.  Discord reply chains are common loop
+                    # fuel, but cross-bot collaboration often happens as a
+                    # reply to the user's instruction plus a real <@bot_id>
+                    # mention.  Keep the explicit mention path open and reject
+                    # ambient bot replies.
+                    if (
+                        message.type == discord.MessageType.reply
+                        and not _explicit_self_mentioned
+                    ):
                         logger.debug(
                             "[%s] Dropping bot reply message: author=%s",
-                            self.name, message.author.id,
+                            self.name, getattr(message.author, "id", "unknown"),
                         )
                         return
                 else:

@@ -84,6 +84,18 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+_DISCORD_EMPTY_RESPONSE_NOISE_RE = re.compile(
+    r"(?:"
+    r"(?:⚠️\s*)?empty\s+response\s+from\s+model\s+[—-]\s+retrying\s+\(\d+/\d+\)"
+    r"|(?:⚠️\s*)?model\s+returning\s+empty\s+responses[.!]?"
+    r"|(?:⚠️\s*)?the\s+model\s+returned\s+no\s+response\s+after\s+processing\s+tool\s+results\.\s*"
+    r"this\s+can\s+happen\s+with\s+some\s+models\s+[—-]\s+try\s+again\s+or\s+rephrase\s+your\s+question\."
+    r"|(?:⚠️\s*)?processing\s+completed\s+but\s+no\s+response\s+was\s+generated\.\s*"
+    r"this\s+may\s+be\s+a\s+transient\s+error\s+[—-]\s+try\s+sending\s+your\s+message\s+again\."
+    r")",
+    re.IGNORECASE | re.DOTALL,
+)
+
 _GATEWAY_PROVIDER_ERROR_RE = re.compile(
     r"("  # infrastructure/provider error preambles, not ordinary assistant prose
     r"api\s+(?:call\s+)?failed"
@@ -213,6 +225,8 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     """
     if not text:
         return text
+    if _gateway_platform_value(platform) == "discord" and _DISCORD_EMPTY_RESPONSE_NOISE_RE.fullmatch(str(text).strip()):
+        return ""
     if _gateway_platform_value(platform) != "telegram":
         return text
 
@@ -226,6 +240,8 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     """Filter/sanitize agent status callbacks before platform delivery."""
     text = str(message or "").strip()
     if not text:
+        return None
+    if _gateway_platform_value(platform) == "discord" and _DISCORD_EMPTY_RESPONSE_NOISE_RE.fullmatch(text):
         return None
     if _gateway_platform_value(platform) != "telegram":
         return text
