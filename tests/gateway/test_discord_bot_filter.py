@@ -16,13 +16,20 @@ def _make_author(*, bot: bool = False, is_self: bool = False):
     return author
 
 
-def _make_message(*, author=None, content="hello", mentions=None, is_dm=False, message_type=None):
+def _make_message(*, author=None, content="hello", mentions=None, raw_mentions=None, is_dm=False, message_type=None):
     """Create a mock Discord message."""
     msg = MagicMock()
     msg.author = author or _make_author()
     msg.content = content
     msg.attachments = []
     msg.mentions = mentions or []
+    if raw_mentions is None:
+        raw_mentions = [
+            getattr(m, "id", m)
+            for m in msg.mentions
+            if str(getattr(m, "id", m)) in content
+        ]
+    msg.raw_mentions = raw_mentions
     if message_type is None:
         import discord
         message_type = discord.MessageType.default
@@ -63,12 +70,17 @@ class TestDiscordBotFilter(unittest.TestCase):
             import discord
             is_dm_channel = isinstance(message.channel, discord.DMChannel)
             self_mentioned = client_user is not None and client_user in message.mentions
+            client_user_id = getattr(client_user, "id", None)
+            explicit_self_mentioned = (
+                client_user_id is not None
+                and int(client_user_id) in set(getattr(message, "raw_mentions", []))
+            )
             if allow in {"mentions", "all"} and not is_dm_channel:
-                if not self_mentioned:
+                if not explicit_self_mentioned:
                     return False
 
             # Anti-loop: drop bot reply messages unless they explicitly mention us
-            if message.type == discord.MessageType.reply and not self_mentioned:
+            if message.type == discord.MessageType.reply and not explicit_self_mentioned:
                 return False
         
         return True  # message accepted
@@ -106,6 +118,21 @@ class TestDiscordBotFilter(unittest.TestCase):
         msg = _make_message(author=bot, mentions=[], is_dm=False)
         self.assertFalse(self._run_filter(msg, "all", our_user))
 
+    def test_allow_bots_all_rejects_reply_ping_without_explicit_content_mention(self):
+        """Discord reply-pings must not count as explicit bot-to-bot mentions."""
+        import discord
+        our_user = _make_author(is_self=True)
+        bot = _make_author(bot=True)
+        msg = _make_message(
+            author=bot,
+            content="负例测试：这条消息没有 explicit bot mention",
+            mentions=[our_user],
+            raw_mentions=[],
+            is_dm=False,
+            message_type=discord.MessageType.reply,
+        )
+        self.assertFalse(self._run_filter(msg, "all", our_user))
+
     def test_allow_bots_mentions_rejects_without_mention(self):
         """With allow_bots=mentions, bot messages without @mention are rejected."""
         our_user = _make_author(is_self=True)
@@ -117,7 +144,7 @@ class TestDiscordBotFilter(unittest.TestCase):
         """With allow_bots=mentions, bot messages with @mention are accepted."""
         our_user = _make_author(is_self=True)
         bot = _make_author(bot=True)
-        msg = _make_message(author=bot, mentions=[our_user])
+        msg = _make_message(author=bot, content=f"<@{our_user.id}> hello", mentions=[our_user])
         self.assertTrue(self._run_filter(msg, "mentions", our_user))
 
     def test_default_is_none(self):
@@ -130,7 +157,7 @@ class TestDiscordBotFilter(unittest.TestCase):
         """Allow_bots value should be case-insensitive."""
         bot = _make_author(bot=True)
         our_user = _make_author(is_self=True)
-        msg = _make_message(author=bot, mentions=[our_user])
+        msg = _make_message(author=bot, content=f"<@{our_user.id}> hello", mentions=[our_user])
         self.assertTrue(self._run_filter(msg, "ALL", our_user))
         self.assertTrue(self._run_filter(msg, "All", our_user))
         self.assertFalse(self._run_filter(msg, "NONE"))
@@ -152,6 +179,7 @@ class TestDiscordBotFilter(unittest.TestCase):
         bot = _make_author(bot=True)
         msg = _make_message(
             author=bot,
+            content=f"<@{our_user.id}> reply with explicit mention",
             mentions=[our_user],
             message_type=discord.MessageType.reply,
         )
@@ -182,7 +210,7 @@ class TestDiscordBotFilter(unittest.TestCase):
         bot = _make_author(bot=True)
         msg = _make_message(
             author=bot,
-            content="PR #123 is ready. Please review the diff and test plan.",
+            content=f"<@{our_user.id}> PR #123 is ready. Please review the diff and test plan.",
             mentions=[our_user],
         )
         self.assertTrue(self._run_filter(msg, "mentions", our_user))
