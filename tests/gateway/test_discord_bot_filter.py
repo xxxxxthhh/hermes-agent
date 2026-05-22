@@ -147,6 +147,18 @@ class TestDiscordBotFilter(unittest.TestCase):
         msg = _make_message(author=bot, content=f"<@{our_user.id}> hello", mentions=[our_user])
         self.assertTrue(self._run_filter(msg, "mentions", our_user))
 
+    def test_allow_bots_all_accepts_channel_bot_message_with_explicit_raw_mention(self):
+        """With allow_bots=all, shared-channel bot messages with explicit self mention are accepted."""
+        our_user = _make_author(is_self=True)
+        bot = _make_author(bot=True)
+        msg = _make_message(
+            author=bot,
+            content=f"<@{our_user.id}> default message with explicit mention",
+            mentions=[our_user],
+            is_dm=False,
+        )
+        self.assertTrue(self._run_filter(msg, "all", our_user))
+
     def test_default_is_none(self):
         """Document the adapter's code default when no env override is set."""
         with patch.dict(os.environ, {}, clear=True):
@@ -184,6 +196,20 @@ class TestDiscordBotFilter(unittest.TestCase):
             message_type=discord.MessageType.reply,
         )
         self.assertTrue(self._run_filter(msg, "mentions", our_user))
+
+    def test_allow_bots_all_accepts_bot_reply_with_explicit_raw_mention(self):
+        """With allow_bots=all, bot replies with explicit body self mention are accepted."""
+        import discord
+        our_user = _make_author(is_self=True)
+        bot = _make_author(bot=True)
+        msg = _make_message(
+            author=bot,
+            content=f"<@{our_user.id}> reply with explicit mention",
+            mentions=[our_user],
+            is_dm=False,
+            message_type=discord.MessageType.reply,
+        )
+        self.assertTrue(self._run_filter(msg, "all", our_user))
 
     def test_allow_bots_mentions_rejects_bot_reply_without_self_mention(self):
         """Bot reply messages without explicit self mention are still dropped."""
