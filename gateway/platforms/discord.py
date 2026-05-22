@@ -743,12 +743,22 @@ class DiscordAdapter(BasePlatformAdapter):
                 # Bot message filtering (DISCORD_ALLOW_BOTS):
                 #   "none"     — ignore all other bots (default)
                 #   "mentions" — accept bot messages only when they @mention us
-                #   "all"      — accept bot messages only when they @mention us
+                #   "all"      — accept non-reply bot messages; reply messages still
+                #                drop via anti-loop guard below
                 # Must run BEFORE the user allowlist check so that bots
                 # permitted by DISCORD_ALLOW_BOTS are not rejected for
                 # not being in DISCORD_ALLOWED_USERS (fixes #4466).
                 _is_bot = getattr(message.author, "bot", False)
                 if _is_bot:
+                    allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
+                    if allow_bots == "none":
+                        return
+                    elif allow_bots == "mentions":
+                        if not self._client.user or self._client.user not in message.mentions:
+                            return
+                    # "all" falls through; bot is permitted — skip the
+                    # human-user allowlist below (bots aren't in it).
+
                     # Anti-loop: unconditionally drop bot reply messages.
                     # In multi-agent threads, reply chains are the primary
                     # loop fuel; discarding them by MessageType is clean,
@@ -760,25 +770,6 @@ class DiscordAdapter(BasePlatformAdapter):
                             self.name, getattr(message.author, "id", "unknown"),
                         )
                         return
-
-                    # Bot-originated Discord messages must explicitly mention this
-                    # bot. Do not let shared-thread participation or
-                    # DISCORD_ALLOW_BOTS=all turn another bot's status chatter into
-                    # a new agent run.
-                    client_user = self._client.user if self._client else None
-                    if not client_user or client_user not in message.mentions:
-                        logger.debug(
-                            "[%s] Ignoring bot Discord message without self mention from %s",
-                            self.name, getattr(message.author, "id", "unknown"),
-                        )
-                        return
-
-                    allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
-                    if allow_bots == "none":
-                        return
-                    # "mentions" and "all" both fall through after the explicit
-                    # self-mention requirement above; bot is permitted — skip the
-                    # human-user allowlist below (bots aren't in it).
                 else:
                     # Non-bot: enforce the configured user/role allowlists.
                     # Pass guild + is_dm so role checks are scoped to the

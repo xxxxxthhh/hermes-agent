@@ -57,14 +57,17 @@ class TestDiscordBotFilter(unittest.TestCase):
             return False
 
         if getattr(message.author, "bot", False):
-            if message.type == discord.MessageType.reply:
-                return False
-            if not client_user or client_user not in message.mentions:
-                return False
             allow = allow_bots.lower().strip()
             if allow == "none":
                 return False
-            # "mentions" and "all" both fall through after explicit self mention.
+            elif allow == "mentions":
+                if not client_user or client_user not in message.mentions:
+                    return False
+            # "all" falls through
+
+            # Anti-loop: unconditionally drop bot reply messages
+            if message.type == discord.MessageType.reply:
+                return False
         
         return True  # message accepted
 
@@ -88,19 +91,11 @@ class TestDiscordBotFilter(unittest.TestCase):
         msg = _make_message(author=bot)
         self.assertFalse(self._run_filter(msg, "none"))
 
-    def test_allow_bots_all_rejects_without_self_mention(self):
-        """Bot messages still require explicit self mention with allow_bots=all."""
-        our_user = _make_author(is_self=True)
+    def test_allow_bots_all_accepts_bots_without_self_mention(self):
+        """With allow_bots=all, non-reply bot messages are accepted without @mention."""
         bot = _make_author(bot=True)
         msg = _make_message(author=bot, mentions=[])
-        self.assertFalse(self._run_filter(msg, "all", our_user))
-
-    def test_allow_bots_all_accepts_with_self_mention(self):
-        """With allow_bots=all, substantive bot messages with @mention are accepted."""
-        our_user = _make_author(is_self=True)
-        bot = _make_author(bot=True)
-        msg = _make_message(author=bot, content="Please review PR #123", mentions=[our_user])
-        self.assertTrue(self._run_filter(msg, "all", our_user))
+        self.assertTrue(self._run_filter(msg, "all"))
 
     def test_allow_bots_mentions_rejects_without_mention(self):
         """With allow_bots=mentions, bot messages without @mention are rejected."""
@@ -124,13 +119,12 @@ class TestDiscordBotFilter(unittest.TestCase):
 
     def test_case_insensitive(self):
         """Allow_bots value should be case-insensitive."""
-        our_user = _make_author(is_self=True)
         bot = _make_author(bot=True)
-        msg = _make_message(author=bot, content="Please review this", mentions=[our_user])
-        self.assertTrue(self._run_filter(msg, "ALL", our_user))
-        self.assertTrue(self._run_filter(msg, "All", our_user))
-        self.assertFalse(self._run_filter(msg, "NONE", our_user))
-        self.assertFalse(self._run_filter(msg, "None", our_user))
+        msg = _make_message(author=bot)
+        self.assertTrue(self._run_filter(msg, "ALL"))
+        self.assertTrue(self._run_filter(msg, "All"))
+        self.assertFalse(self._run_filter(msg, "NONE"))
+        self.assertFalse(self._run_filter(msg, "None"))
 
 
     def test_allow_bots_all_rejects_bot_reply(self):
@@ -169,7 +163,7 @@ class TestDiscordBotFilter(unittest.TestCase):
             content="PR #123 is ready. Please review the diff and test plan.",
             mentions=[our_user],
         )
-        self.assertTrue(self._run_filter(msg, "all", our_user))
+        self.assertTrue(self._run_filter(msg, "mentions", our_user))
 
 
 if __name__ == "__main__":
