@@ -519,11 +519,13 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     if bundle.source == "url" and not category and not skip_confirm:
         category = _prompt_for_category(c, _existing_categories())
 
-    # Auto-detect category for official skills (e.g. "official/autonomous-ai-agents/blackbox")
+    # Auto-detect the full parent path for official skills. Optional skills
+    # can be nested (e.g. "official/mlops/training/trl-fine-tuning"), so keep
+    # every identifier segment between "official" and the final skill slug.
     if bundle.source == "official" and not category:
-        id_parts = bundle.identifier.split("/")  # ["official", "category", "skill"]
+        id_parts = bundle.identifier.split("/")
         if len(id_parts) >= 3:
-            category = id_parts[1]
+            category = "/".join(id_parts[1:-1])
 
     # Check if already installed
     lock = HubLockFile()
@@ -550,7 +552,14 @@ def do_install(identifier: str, category: str = "", force: bool = False,
 
     # Scan
     c.print("[bold]Running security scan...[/]")
-    scan_source = getattr(bundle, "identifier", "") or getattr(meta, "identifier", "") or identifier
+    if bundle.source == "official":
+        scan_source = "official"
+    else:
+        scan_source = (
+            getattr(bundle, "identifier", "")
+            or getattr(meta, "identifier", "")
+            or identifier
+        )
     result = scan_skill(q_path, source=scan_source)
     c.print(format_scan_report(result))
 
@@ -906,8 +915,14 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None) -> 
     c.print(f"[bold green]Updated {len(updates)} skill(s).[/]\n")
 
 
-def do_audit(name: Optional[str] = None, console: Optional[Console] = None) -> None:
-    """Re-run security scan on installed hub skills."""
+def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
+             deep: bool = False) -> None:
+    """Re-run security scan on installed hub skills.
+
+    When ``deep=True``, also runs an opt-in AST-level diagnostic on Python
+    files (review aid only — not a security gate; skills_guard.py verdicts
+    are unchanged).
+    """
     from tools.skills_hub import HubLockFile, SKILLS_DIR
     from tools.skills_guard import scan_skill, format_scan_report
 
@@ -928,6 +943,9 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None) -> N
 
     c.print(f"\n[bold]Auditing {len(targets)} skill(s)...[/]\n")
 
+    if deep:
+        from tools.skills_ast_audit import ast_scan_path, format_ast_report
+
     for entry in targets:
         skill_path = SKILLS_DIR / entry["install_path"]
         if not skill_path.exists():
@@ -936,6 +954,10 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None) -> N
 
         result = scan_skill(skill_path, source=entry.get("identifier", entry["source"]))
         c.print(format_scan_report(result))
+
+        if deep:
+            c.print(format_ast_report(ast_scan_path(skill_path), skill_name=entry["name"]))
+
         c.print()
 
 
@@ -1017,6 +1039,48 @@ def do_reset(name: str, restore: bool = False,
     else:
         c.print("[dim]Change will take effect in your next session.[/]")
         c.print("[dim]Use /reset to start a new session now, or --now to apply immediately (invalidates prompt cache).[/]\n")
+
+
+def do_repair_official(name: str, restore: bool = False,
+                       console: Optional[Console] = None,
+                       skip_confirm: bool = False,
+                       invalidate_cache: bool = True) -> None:
+    """Backfill or restore official optional skills from repo source."""
+    from tools.skills_sync import restore_official_optional_skill
+
+    c = console or _console
+    if restore and not skip_confirm:
+        c.print(f"\n[bold]Restore official optional skill '{name}' from repo source?[/]")
+        c.print("[dim]Existing matching active copies will be moved to a restore backup before copying the official source.[/]")
+        try:
+            answer = input("Confirm [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = "n"
+        if answer not in {"y", "yes"}:
+            c.print("[dim]Cancelled.[/]\n")
+            return
+
+    result = restore_official_optional_skill(name, restore=restore)
+    if not result.get("ok"):
+        c.print(f"[bold red]Error:[/] {result.get('message', 'Repair failed')}\n")
+        return
+
+    c.print(f"[bold green]{result['message']}[/]")
+    if result.get("restored"):
+        c.print(f"[dim]Restored: {', '.join(result['restored'])}[/]")
+    if result.get("backfilled"):
+        c.print(f"[dim]Backfilled provenance: {', '.join(result['backfilled'])}[/]")
+    if result.get("backed_up"):
+        c.print(f"[dim]Backed up: {', '.join(result['backed_up'])}[/]")
+        c.print(f"[dim]Backup dir: {result.get('backup_dir')}[/]")
+    c.print()
+
+    if invalidate_cache:
+        try:
+            from agent.prompt_builder import clear_skills_system_prompt_cache
+            clear_skills_system_prompt_cache(clear_snapshot=True)
+        except Exception:
+            pass
 
 
 def do_tap(action: str, repo: str = "", console: Optional[Console] = None) -> None:
@@ -1343,12 +1407,16 @@ def skills_command(args) -> None:
     elif action == "update":
         do_update(name=getattr(args, "name", None))
     elif action == "audit":
-        do_audit(name=getattr(args, "name", None))
+        do_audit(name=getattr(args, "name", None),
+                 deep=getattr(args, "deep", False))
     elif action == "uninstall":
         do_uninstall(args.name)
     elif action == "reset":
         do_reset(args.name, restore=getattr(args, "restore", False),
                  skip_confirm=getattr(args, "yes", False))
+    elif action == "repair-official":
+        do_repair_official(args.name, restore=getattr(args, "restore", False),
+                           skip_confirm=getattr(args, "yes", False))
     elif action == "publish":
         do_publish(
             args.skill_path,
@@ -1395,6 +1463,8 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         /skills update
         /skills audit
         /skills audit my-skill
+        /skills audit --deep
+        /skills audit my-skill --deep
         /skills uninstall my-skill
         /skills tap list
         /skills tap add owner/repo
@@ -1509,8 +1579,9 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         do_update(name=name, console=c)
 
     elif action == "audit":
-        name = args[0] if args else None
-        do_audit(name=name, console=c)
+        name = args[0] if args and not args[0].startswith("--") else None
+        deep = "--deep" in args
+        do_audit(name=name, console=c, deep=deep)
 
     elif action == "uninstall":
         if not args:
