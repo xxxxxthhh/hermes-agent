@@ -1133,9 +1133,15 @@ def load_gateway_config() -> GatewayConfig:
             # apply_yaml_config_fn hook (plugins/platforms/matrix/adapter.py).
             # #41112 / #3823.
 
-            # Feishu settings → env vars: migrated to the feishu plugin's
-            # apply_yaml_config_fn hook (plugins/platforms/feishu/adapter.py).
-            # #41112 / #3823.
+            # Feishu settings → env vars (env vars take precedence)
+            feishu_cfg = yaml_cfg.get("feishu", {})
+            if isinstance(feishu_cfg, dict):
+                if "allow_bots" in feishu_cfg and not os.getenv("FEISHU_ALLOW_BOTS"):
+                    os.environ["FEISHU_ALLOW_BOTS"] = str(feishu_cfg["allow_bots"]).lower()
+                if "outbound_format" in feishu_cfg and not os.getenv("HERMES_FEISHU_OUTBOUND_FORMAT"):
+                    os.environ["HERMES_FEISHU_OUTBOUND_FORMAT"] = str(feishu_cfg["outbound_format"]).lower()
+                if "message_format" in feishu_cfg and not os.getenv("HERMES_FEISHU_OUTBOUND_FORMAT"):
+                    os.environ["HERMES_FEISHU_OUTBOUND_FORMAT"] = str(feishu_cfg["message_format"]).lower()
 
     except Exception as e:
         logger.warning(

@@ -460,6 +460,27 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         self.assertEqual(table["rows"][0], {"c1": "Alpha", "c2": "**1**"})
         self.assertEqual(table["rows"][1], {"c1": "Beta", "c2": "[two](https://example.com)"})
 
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_auto_routes_markdown_tables_to_card_json_v2_table(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        msg_type, payload = adapter._build_outbound_payload(
+            "| Name | Value |\n|---|---|\n| Alpha | **1** |\n| Beta | [two](https://example.com) |"
+        )
+
+        self.assertEqual(msg_type, "interactive")
+        card = json.loads(payload)
+        table = card["body"]["elements"][0]
+        self.assertEqual(card["schema"], "2.0")
+        self.assertEqual(table["tag"], "table")
+        self.assertEqual(table["columns"][0]["display_name"], "Name")
+        self.assertEqual(table["columns"][1]["display_name"], "Value")
+        self.assertEqual(table["rows"][0], {"c1": "Alpha", "c2": "**1**"})
+        self.assertEqual(table["rows"][1], {"c1": "Beta", "c2": "[two](https://example.com)"})
+
     @patch.dict(os.environ, {}, clear=True)
     def test_get_chat_info_uses_real_feishu_chat_api(self):
         from gateway.config import PlatformConfig
