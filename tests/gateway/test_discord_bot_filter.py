@@ -1,8 +1,9 @@
 """Tests for Discord bot message filtering (DISCORD_ALLOW_BOTS)."""
 
 import os
+import re
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 
 def _make_author(*, bot: bool = False, is_self: bool = False):
@@ -51,7 +52,37 @@ def _make_message(*, author=None, content="hello", mentions=None, raw_mentions=N
 class TestDiscordBotFilter(unittest.TestCase):
     """Test the DISCORD_ALLOW_BOTS filtering logic."""
 
-    def _run_filter(self, message, allow_bots="none", client_user=None):
+    @staticmethod
+    def _self_is_explicitly_mentioned(message, client_user):
+        """Mirror adapter._self_is_explicitly_mentioned: resolved or raw mention."""
+        if not client_user:
+            return False
+        if client_user in message.mentions:
+            return True
+        raw_ids = {
+            m.group(1)
+            for m in re.finditer(r"<@!?(\d+)>", getattr(message, "content", "") or "")
+        }
+        return str(client_user.id) in raw_ids
+
+    @staticmethod
+    def _self_is_raw_mentioned(message, client_user):
+        """Mirror adapter._self_is_raw_mentioned: raw inline token only."""
+        if not client_user:
+            return False
+        raw_ids = {
+            m.group(1)
+            for m in re.finditer(r"<@!?(\d+)>", getattr(message, "content", "") or "")
+        }
+        return str(client_user.id) in raw_ids
+
+    def _run_filter(
+        self,
+        message,
+        allow_bots="none",
+        client_user=None,
+        bots_require_inline_mention=False,
+    ):
         """Simulate the on_message filter logic and return whether message was accepted."""
         # Replicate the exact filter logic from discord.py on_message
         if message.author == client_user:
@@ -68,20 +99,16 @@ class TestDiscordBotFilter(unittest.TestCase):
                 return False
             import discord
             is_dm_channel = isinstance(message.channel, discord.DMChannel)
-            self_mentioned = client_user is not None and client_user in message.mentions
-            client_user_id = getattr(client_user, "id", None)
-            explicit_self_mentioned = (
-                client_user_id is not None
-                and int(client_user_id) in set(getattr(message, "raw_mentions", []))
-            )
-            if allow in {"mentions", "all"} and not is_dm_channel:
-                if not explicit_self_mentioned:
-                    return False
-
-            # Anti-loop: drop bot reply messages unless they explicitly mention us
-            if message.type == discord.MessageType.reply and not explicit_self_mentioned:
+            raw_self_mentioned = self._self_is_raw_mentioned(message, client_user)
+            if not is_dm_channel and not raw_self_mentioned:
                 return False
-        
+            if allow == "mentions" and not self._self_is_explicitly_mentioned(message, client_user):
+                return False
+            if bots_require_inline_mention and not raw_self_mentioned:
+                return False
+            if message.type == discord.MessageType.reply and not raw_self_mentioned:
+                return False
+
         return True  # message accepted
 
     def test_own_messages_always_ignored(self):
@@ -157,6 +184,77 @@ class TestDiscordBotFilter(unittest.TestCase):
             is_dm=False,
         )
         self.assertTrue(self._run_filter(msg, "all", our_user))
+
+    def test_allow_bots_mentions_accepts_with_raw_content_mention(self):
+        """Raw <@!ID> mention counts even when message.mentions is empty."""
+        our_user = _make_author(is_self=True)
+        bot = _make_author(bot=True)
+        msg = _make_message(author=bot, content=f"<@!{our_user.id}> relay", mentions=[])
+        self.assertTrue(self._run_filter(msg, "mentions", our_user))
+
+    def test_inline_mention_requirement_off_still_rejects_reply_ping_only(self):
+        """Our shared-channel bot gate rejects reply-ping-only bot messages by default."""
+        our_user = _make_author(is_self=True)
+        bot = _make_author(bot=True)
+        msg = _make_message(author=bot, content="reply-ping only", mentions=[our_user])
+
+        self.assertFalse(
+            self._run_filter(
+                msg,
+                "all",
+                our_user,
+                bots_require_inline_mention=False,
+            )
+        )
+
+    def test_inline_mention_requirement_rejects_reply_ping_only(self):
+        """Opt-in guard also rejects bot messages where only Discord's reply-ping mentions us."""
+        our_user = _make_author(is_self=True)
+        bot = _make_author(bot=True)
+        msg = _make_message(author=bot, content="reply-ping only", mentions=[our_user])
+
+        self.assertFalse(
+            self._run_filter(
+                msg,
+                "all",
+                our_user,
+                bots_require_inline_mention=True,
+            )
+        )
+
+    def test_inline_mention_requirement_accepts_body_mention(self):
+        """Opt-in guard still admits intentional inline cross-bot mentions."""
+        our_user = _make_author(is_self=True)
+        bot = _make_author(bot=True)
+        msg = _make_message(
+            author=bot,
+            content=f"<@{our_user.id}> intentional handoff",
+            mentions=[our_user],
+        )
+
+        self.assertTrue(
+            self._run_filter(
+                msg,
+                "all",
+                our_user,
+                bots_require_inline_mention=True,
+            )
+        )
+
+    def test_inline_mention_requirement_does_not_affect_humans(self):
+        """The opt-in guard only applies to bot-authored messages."""
+        human = _make_author(bot=False)
+        our_user = _make_author(is_self=True)
+        msg = _make_message(author=human, content="human reply-ping", mentions=[our_user])
+
+        self.assertTrue(
+            self._run_filter(
+                msg,
+                "none",
+                our_user,
+                bots_require_inline_mention=True,
+            )
+        )
 
     def test_default_is_none(self):
         """Document the adapter's code default when no env override is set."""
