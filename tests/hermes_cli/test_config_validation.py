@@ -264,6 +264,7 @@ class TestUnknownTopLevelKeys:
             "reset_triggers": ["/new"],
             "always_log_local": True,
             "filter_silence_narration": True,
+            "feishu": {"outbound_format": "card"},
         })
         unknown = [i for i in issues if "Unknown top-level config key" in i.message]
         messages = " ".join(i.message for i in unknown)
@@ -274,6 +275,7 @@ class TestUnknownTopLevelKeys:
         assert "reset_triggers" not in messages
         assert "always_log_local" not in messages
         assert "filter_silence_narration" not in messages
+        assert "feishu" not in messages
 
     def test_provider_like_unknown_root_keeps_misplaced_message(self):
         """Preserve existing base_url/api_key root-level guidance (not generic unknown)."""
